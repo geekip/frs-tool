@@ -122,7 +122,10 @@ func TestBuildRejectsOutputSourceConflictBeforeRead(t *testing.T) {
 
 func TestBuildLockConflictIsImmediateAndDoesNotRunPipeline(t *testing.T) {
 	directory := t.TempDir()
-	output := filepath.Join(directory, "rules.frs")
+	output, err := publish.NormalizeOutput(filepath.Join(directory, "rules.frs"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	services := successfulServices(t, output)
 	called := false
 	services.RunPipeline = func(context.Context, config.Config, source.Index) (pipeline.Result, error) {

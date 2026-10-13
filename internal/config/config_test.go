@@ -19,6 +19,10 @@ func TestLoadDefaultsAndRealManifestDirectory(t *testing.T) {
 	}
 	manifestPath := filepath.Join(realDir, "config.json")
 	writeManifest(t, manifestPath, minimalManifest)
+	resolvedManifestPath, err := filepath.EvalSymlinks(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	linkPath := filepath.Join(root, "config-link.json")
 	if err := os.Symlink(manifestPath, linkPath); err != nil {
 		t.Fatal(err)
@@ -28,10 +32,10 @@ func TestLoadDefaultsAndRealManifestDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ManifestPath != manifestPath {
-		t.Errorf("ManifestPath = %q, want %q", cfg.ManifestPath, manifestPath)
+	if cfg.ManifestPath != resolvedManifestPath {
+		t.Errorf("ManifestPath = %q, want %q", cfg.ManifestPath, resolvedManifestPath)
 	}
-	if cfg.Output != filepath.Join(realDir, "rules.frs") {
+	if cfg.Output != filepath.Join(filepath.Dir(resolvedManifestPath), "rules.frs") {
 		t.Errorf("Output = %q", cfg.Output)
 	}
 	if cfg.Download.Concurrency != 10 || cfg.Download.PerHostConcurrency != 3 ||
@@ -74,11 +78,15 @@ func TestLoadOverrides(t *testing.T) {
 	}`
 	path := filepath.Join(t.TempDir(), "config.json")
 	writeManifest(t, path, manifest)
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Output != filepath.Join(filepath.Dir(path), "dist", "custom.frs") {
+	if cfg.Output != filepath.Join(filepath.Dir(resolvedPath), "dist", "custom.frs") {
 		t.Errorf("Output = %q", cfg.Output)
 	}
 	if cfg.Download.Concurrency != 4 || cfg.Download.PerHostConcurrency != 2 ||
