@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -19,7 +20,11 @@ func TestFlattenDeduplicatesPhysicalSourcesAndKeepsBindings(t *testing.T) {
 	if err := os.WriteFile(localPath, []byte("example.com"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fileURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(localPath)}).String()
+	fileURLPath := filepath.ToSlash(localPath)
+	if runtime.GOOS == "windows" {
+		fileURLPath = "/" + fileURLPath
+	}
+	fileURL := (&url.URL{Scheme: "file", Path: fileURLPath}).String()
 	cfg := config.Config{
 		BaseDir: base,
 		Download: config.DownloadConfig{
