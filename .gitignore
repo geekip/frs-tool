@@ -5,8 +5,8 @@
 # Local caches and build outputs
 __pycache__/
 *.py[cod]
-build/
-dist/
+/build/
+/dist/
 *.exe
 *.tmp
 *.log
