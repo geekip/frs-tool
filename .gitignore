@@ -1,0 +1,15 @@
+# Local AI/agent workspace
+/.harness/
+/AGENTS.md
+
+# Local caches and build outputs
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.exe
+*.tmp
+*.log
+
+.DS_Store
+todo

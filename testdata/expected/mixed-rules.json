@@ -1,0 +1,23 @@
+{
+  "Records": [
+    {"Line": 2, "Kind": "ipv4", "Value": "192.168.7.0/24"},
+    {"Line": 3, "Kind": "domain_suffix", "Value": "suffix.example.com"},
+    {"Line": 4, "Kind": "domain_exact", "Value": "exact.example.com"},
+    {"Line": 5, "Kind": "domain_suffix", "Value": "dns.example.net"},
+    {"Line": 5, "Kind": "domain_suffix", "Value": "alt.example.net"},
+    {"Line": 6, "Kind": "domain_exact", "Value": "host.example.org"},
+    {"Line": 7, "Kind": "domain_suffix", "Value": "plain.example.dev"},
+    {"Line": 8, "Kind": "domain_keyword", "Value": "media,video"},
+    {"Line": 9, "Kind": "domain_keyword", "Value": "media"},
+    {"Line": 10, "Kind": "ipv4", "Value": "192.0.2.1/32"}
+  ],
+  "Filtered": [
+    {"Line": 11, "Value": "2001:db8::1/128"}
+  ],
+  "Warnings": [
+    {"Line": 12, "Code": "RULE_UNSUPPORTED"},
+    {"Line": 13, "Code": "RULE_WILDCARD"},
+    {"Line": 14, "Code": "RULE_UNSUPPORTED"},
+    {"Line": 15, "Code": "RULE_INVALID_DOMAIN"}
+  ]
+}

@@ -1,0 +1,15 @@
+# mixed syntax fixture
+IP-CIDR,192.168.7.99/24,DIRECT,no-resolve
+DOMAIN-SUFFIX,Suffix.Example.COM
+full:Exact.Example.COM.
+server=/Dns.Example.net/Alt.Example.net/8.8.8.8
+-.Host.Example.org
+Plain.Example.dev
+keyword:Media,Video
+keyword:Media
+192.0.2.1
+2001:db8::1
+DOMAIN-REGEX,^.*example$
+*.bad.example
+UNKNOWN,whatever
+DOMAIN,bad_name

@@ -1,0 +1,26 @@
+{
+  "output": "rules.frs",
+  "download": {
+    "concurrency": 10,
+    "per-host-concurrency": 3,
+    "timeout": "120s",
+    "connect-timeout": "10s",
+    "retries": 3
+  },
+  "extract": {
+    "concurrency": 5
+  },
+  "build": {
+    "max-line-size": "16KiB",
+    "max-diagnostics": 1000
+  },
+  "groups": [
+    {
+      "name": "example",
+      "sources": [
+        "rules.txt",
+        "https://example.com/rules.txt"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+[
+  {"Kind": "ip", "Value": "192.168.7.42", "Match": true},
+  {"Kind": "ip", "Value": "192.168.8.1", "Match": false},
+  {"Kind": "ip", "Value": "192.0.2.1", "Match": true},
+  {"Kind": "ip", "Value": "192.0.2.2", "Match": false},
+  {"Kind": "domain", "Value": "suffix.example.com", "Match": true},
+  {"Kind": "domain", "Value": "a.suffix.example.com", "Match": true},
+  {"Kind": "domain", "Value": "badsuffix.example.com", "Match": false},
+  {"Kind": "domain", "Value": "exact.example.com", "Match": true},
+  {"Kind": "domain", "Value": "child.exact.example.com", "Match": false},
+  {"Kind": "domain", "Value": "host.example.org", "Match": true},
+  {"Kind": "domain", "Value": "child.host.example.org", "Match": false},
+  {"Kind": "domain", "Value": "x.dns.example.net", "Match": true},
+  {"Kind": "domain", "Value": "streaming-media.test", "Match": true},
+  {"Kind": "domain", "Value": "unrelated.test", "Match": false}
+]
