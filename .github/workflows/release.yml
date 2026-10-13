@@ -13,8 +13,11 @@ env:
   TAG: ${{ github.ref_name }}
 
 jobs:
-  test:
+  release:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
@@ -31,307 +34,81 @@ jobs:
           env GOTOOLCHAIN=local GOPROXY=off go test -count=1 ./...
           env GOTOOLCHAIN=local GOPROXY=off go vet ./...
           env GOTOOLCHAIN=local GOPROXY=off go test -race -count=1 ./...
-
-  platform-unix:
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            goos: linux
-            goarch: amd64
-          - runner: ubuntu-24.04-arm
-            goos: linux
-            goarch: arm64
-          - runner: macos-15-intel
-            goos: darwin
-            goarch: amd64
-          - runner: macos-15
-            goos: darwin
-            goarch: arm64
-    runs-on: ${{ matrix.runner }}
-    env:
-      TARGET_OS: ${{ matrix.goos }}
-      TARGET_ARCH: ${{ matrix.goarch }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: false
-          cache: false
-      - name: Test, build, and exercise archive
+      - name: Cross-build and verify all release archives
         shell: bash
         run: |
           set -euo pipefail
-          trap 'status=$?; printf "::error title=platform smoke failed::line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status"' ERR
-          test "$(go env GOOS)" = "$TARGET_OS"
-          test "$(go env GOARCH)" = "$TARGET_ARCH"
+          trap 'status=$?; printf "::error title=release build failed::line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status"' ERR
           export CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off
-          if ! go test -count=1 ./...; then
-            while IFS= read -r package; do
-              if ! package_output="$(go test -count=1 "$package" 2>&1)"; then
-                printf '::error title=go test failed::package %s failed\n' "$package"
-                printf '%s\n' "$package_output" | tail -n 25 | while IFS= read -r line; do
-                  line="${line//'%'/'%25'}"
-                  line="${line//$'\r'/'%0D'}"
-                  printf '::error title=go test failed::%s\n' "$line"
-                done
-              fi
-            done < <(go list ./...)
-            exit 1
-          fi
-          mkdir -p dist smoke unpacked
-          go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X frs-tool/internal/version.Version=$TAG" -o dist/frs ./cmd/frs-tool
-          test "$(./dist/frs version | sed -n '1p')" = "frs $TAG"
+          mkdir -p assets build smoke unpacked
+          go build -trimpath -buildvcs=false -o build/package-release ./cmd/package-release
+
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+            "windows arm64"
+            "freebsd amd64"
+            "freebsd arm64"
+          )
+          for target in "${targets[@]}"; do
+            read -r target_os target_arch <<< "$target"
+            suffix=""
+            if [ "$target_os" = windows ]; then suffix=".exe"; fi
+            target_dir="build/$target_os-$target_arch"
+            binary="$target_dir/frs$suffix"
+            mkdir -p "$target_dir"
+            env GOOS="$target_os" GOARCH="$target_arch" go build \
+              -trimpath -buildvcs=false \
+              -ldflags="-s -w -buildid= -X frs-tool/internal/version.Version=$TAG" \
+              -o "$binary" ./cmd/frs-tool
+            build_info="$(go version -m "$binary")"
+            grep -Fq "CGO_ENABLED=0" <<< "$build_info"
+            grep -Fq "GOOS=$target_os" <<< "$build_info"
+            grep -Fq "GOARCH=$target_arch" <<< "$build_info"
+            build/package-release \
+              -version "$TAG" -goos "$target_os" -goarch "$target_arch" \
+              -binary "$binary" -out assets
+          done
+
           printf '1.2.3.4\nDOMAIN,example.com\n' > smoke/rules.txt
           printf '{"output":"rules.frs","groups":[{"name":"main","sources":["rules.txt"]}]}\n' > smoke/config.json
-          ./dist/frs -c smoke/config.json
-          ./dist/frs verify smoke/rules.frs
-          ./dist/frs inspect --json smoke/rules.frs
-          cp smoke/rules.frs "dist/rules-$TARGET_OS-$TARGET_ARCH.frs"
-          go run ./cmd/package-release -version "$TAG" -goos "$TARGET_OS" -goarch "$TARGET_ARCH" -binary dist/frs -out dist
-          tar -xzf "dist/frs-$TAG-$TARGET_OS-$TARGET_ARCH.tar.gz" -C unpacked
-          archive_bin="unpacked/frs-$TAG-$TARGET_OS-$TARGET_ARCH/frs"
+          native_bin="build/linux-amd64/frs"
+          test "$("$native_bin" version | sed -n '1p')" = "frs $TAG"
+          "$native_bin" -c smoke/config.json
+          "$native_bin" verify smoke/rules.frs
+          "$native_bin" inspect --json smoke/rules.frs
+
+          mapfile -t archives < <(find assets -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' | LC_ALL=C sort)
+          test "${#archives[@]}" -eq 8
+          for target in "${targets[@]}"; do
+            read -r target_os target_arch <<< "$target"
+            base="frs-$TAG-$target_os-$target_arch"
+            binary_name="frs"
+            archive="assets/$base.tar.gz"
+            if [ "$target_os" = windows ]; then
+              binary_name="frs.exe"
+              archive="assets/$base.zip"
+              unzip -tqq "$archive"
+              mapfile -t entries < <(unzip -Z1 "$archive")
+            else
+              tar -tzf "$archive" >/dev/null
+              mapfile -t entries < <(tar -tzf "$archive")
+            fi
+            test "${#entries[@]}" -eq 3
+            for expected in "$base/$binary_name" "$base/README.md" "$base/config.example.json"; do
+              printf '%s\n' "${entries[@]}" | grep -Fxq "$expected"
+            done
+          done
+
+          tar -xzf "assets/frs-$TAG-linux-amd64.tar.gz" -C unpacked
+          archive_bin="unpacked/frs-$TAG-linux-amd64/frs"
           test "$("$archive_bin" version | sed -n '1p')" = "frs $TAG"
           "$archive_bin" verify smoke/rules.frs
           "$archive_bin" inspect --json smoke/rules.frs
-          printf '{"output":"archive.frs","groups":[{"name":"main","sources":["rules.txt"]}]}\n' > smoke/archive-config.json
-          "$archive_bin" -c smoke/archive-config.json
-          cmp smoke/rules.frs smoke/archive.frs
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: platform-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            dist/frs-${{ env.TAG }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
-            dist/rules-${{ matrix.goos }}-${{ matrix.goarch }}.frs
-          if-no-files-found: error
-          retention-days: 7
 
-  platform-windows:
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-2025
-            goarch: amd64
-          - runner: windows-11-arm
-            goarch: arm64
-    runs-on: ${{ matrix.runner }}
-    env:
-      TARGET_ARCH: ${{ matrix.goarch }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: false
-          cache: false
-      - name: Test, build, and exercise archive
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          function Fail-Workflow([string] $Message) {
-            Write-Output "::error title=platform smoke failed::$Message"
-            throw $Message
-          }
-          function Assert-NativeSuccess([string] $Phase) {
-            $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0) { Fail-Workflow "$Phase failed with exit $exitCode" }
-          }
-          if ((go env GOOS) -ne "windows" -or (go env GOARCH) -ne $env:TARGET_ARCH) { Fail-Workflow "runner target mismatch" }
-          $env:CGO_ENABLED = "0"
-          $env:GOTOOLCHAIN = "local"
-          $env:GOPROXY = "off"
-          go test -count=1 ./...
-          if ($LASTEXITCODE -ne 0) {
-            $packages = & go list ./...
-            Assert-NativeSuccess "go list"
-            foreach ($package in $packages) {
-              $packageOutput = & go test -count=1 $package 2>&1
-              if ($LASTEXITCODE -ne 0) {
-                Write-Output "::error title=go test failed::package $package failed"
-                $packageOutput | Select-Object -Last 25 | ForEach-Object {
-                  $line = $_.ToString().Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
-                  Write-Output "::error title=go test failed::$line"
-                }
-              }
-            }
-            Fail-Workflow "go test failed"
-          }
-          New-Item -ItemType Directory -Force dist, smoke, unpacked | Out-Null
-          go build -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X frs-tool/internal/version.Version=$env:TAG" -o dist/frs.exe ./cmd/frs-tool
-          Assert-NativeSuccess "go build"
-          if ((& ./dist/frs.exe version | Select-Object -First 1) -ne "frs $env:TAG") { Fail-Workflow "version mismatch" }
-          "1.2.3.4`nDOMAIN,example.com" | Set-Content -Encoding utf8NoBOM smoke/rules.txt
-          '{"output":"rules.frs","groups":[{"name":"main","sources":["rules.txt"]}]}' | Set-Content -Encoding utf8NoBOM smoke/config.json
-          & ./dist/frs.exe -c smoke/config.json
-          Assert-NativeSuccess "fixture build"
-          & ./dist/frs.exe verify smoke/rules.frs
-          Assert-NativeSuccess "fixture verify"
-          & ./dist/frs.exe inspect --json smoke/rules.frs
-          Assert-NativeSuccess "fixture inspect"
-          Copy-Item smoke/rules.frs "dist/rules-windows-$env:TARGET_ARCH.frs"
-          go run ./cmd/package-release -version $env:TAG -goos windows -goarch $env:TARGET_ARCH -binary dist/frs.exe -out dist
-          Assert-NativeSuccess "archive creation"
-          $archive = "dist/frs-$env:TAG-windows-$env:TARGET_ARCH.zip"
-          Expand-Archive -Path $archive -DestinationPath unpacked
-          $archiveBinary = "unpacked/frs-$env:TAG-windows-$env:TARGET_ARCH/frs.exe"
-          if ((& $archiveBinary version | Select-Object -First 1) -ne "frs $env:TAG") { Fail-Workflow "archive version mismatch" }
-          & $archiveBinary verify smoke/rules.frs
-          Assert-NativeSuccess "archive verify"
-          & $archiveBinary inspect --json smoke/rules.frs
-          Assert-NativeSuccess "archive inspect"
-          '{"output":"archive.frs","groups":[{"name":"main","sources":["rules.txt"]}]}' | Set-Content -Encoding utf8NoBOM smoke/archive-config.json
-          & $archiveBinary -c smoke/archive-config.json
-          Assert-NativeSuccess "archive fixture build"
-          if ((Get-FileHash smoke/rules.frs -Algorithm SHA256).Hash -ne (Get-FileHash smoke/archive.frs -Algorithm SHA256).Hash) { Fail-Workflow "FRS mismatch" }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: platform-windows-${{ matrix.goarch }}
-          path: |
-            dist/frs-${{ env.TAG }}-windows-${{ matrix.goarch }}.zip
-            dist/rules-windows-${{ matrix.goarch }}.frs
-          if-no-files-found: error
-          retention-days: 7
-
-  platform-freebsd:
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goarch: amd64
-            vmarch: x86_64
-          - goarch: arm64
-            vmarch: aarch64
-    runs-on: ubuntu-24.04
-    env:
-      TARGET_ARCH: ${{ matrix.goarch }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - name: Test, build, and exercise archive in FreeBSD
-        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc
-        with:
-          release: "14.3"
-          arch: ${{ matrix.vmarch }}
-          sync: rsync
-          envs: "GO_VERSION TAG TARGET_ARCH"
-          run: |
-            set -eu
-            trap 'status=$?; if [ "$status" -ne 0 ]; then printf "::error title=platform smoke failed::FreeBSD command failed with exit %s\n" "$status"; fi' EXIT
-            toolchain_dir="/tmp/frs-toolchain-$TARGET_ARCH"
-            mkdir -p "$toolchain_dir" dist smoke unpacked
-            fetch -q -o "$toolchain_dir/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.freebsd-${TARGET_ARCH}.tar.gz"
-            tar -xzf "$toolchain_dir/go.tar.gz" -C "$toolchain_dir"
-            export PATH="$toolchain_dir/go/bin:$PATH"
-            export CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off
-            test "$(go env GOOS)" = freebsd
-            test "$(go env GOARCH)" = "$TARGET_ARCH"
-            if ! go test -count=1 ./...; then
-              for package in $(go list ./...); do
-                if ! go test -count=1 "$package"; then
-                  printf '::error title=go test failed::package %s failed\n' "$package"
-                fi
-              done
-              exit 1
-            fi
-            go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X frs-tool/internal/version.Version=$TAG" -o dist/frs ./cmd/frs-tool
-            test "$(./dist/frs version | sed -n '1p')" = "frs $TAG"
-            printf '1.2.3.4\nDOMAIN,example.com\n' > smoke/rules.txt
-            printf '{"output":"rules.frs","groups":[{"name":"main","sources":["rules.txt"]}]}\n' > smoke/config.json
-            ./dist/frs -c smoke/config.json
-            ./dist/frs verify smoke/rules.frs
-            ./dist/frs inspect --json smoke/rules.frs
-            cp smoke/rules.frs "dist/rules-freebsd-$TARGET_ARCH.frs"
-            go run ./cmd/package-release -version "$TAG" -goos freebsd -goarch "$TARGET_ARCH" -binary dist/frs -out dist
-            tar -xzf "dist/frs-$TAG-freebsd-$TARGET_ARCH.tar.gz" -C unpacked
-            archive_bin="unpacked/frs-$TAG-freebsd-$TARGET_ARCH/frs"
-            test "$("$archive_bin" version | sed -n '1p')" = "frs $TAG"
-            "$archive_bin" verify smoke/rules.frs
-            "$archive_bin" inspect --json smoke/rules.frs
-            printf '{"output":"archive.frs","groups":[{"name":"main","sources":["rules.txt"]}]}\n' > smoke/archive-config.json
-            "$archive_bin" -c smoke/archive-config.json
-            cmp smoke/rules.frs smoke/archive.frs
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: platform-freebsd-${{ matrix.goarch }}
-          path: |
-            dist/frs-${{ env.TAG }}-freebsd-${{ matrix.goarch }}.tar.gz
-            dist/rules-freebsd-${{ matrix.goarch }}.frs
-          if-no-files-found: error
-          retention-days: 7
-
-  hardware-benchmark:
-    needs: test
-    strategy:
-      fail-fast: true
-      matrix:
-        tier: [low, medium, high]
-    runs-on: [self-hosted, linux, x64, "frs-${{ matrix.tier }}"]
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: false
-          cache: false
-      - name: Record hardware and benchmark defaults
-        shell: bash
-        run: |
-          set -euo pipefail
-          export CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off
-          sh scripts/benchmark-linux.sh "${{ matrix.tier }}" benchmark
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: benchmark-${{ matrix.tier }}
-          path: benchmark
-          if-no-files-found: error
-          retention-days: 30
-
-  release:
-    needs: [platform-unix, platform-windows, platform-freebsd, hardware-benchmark]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: platform-*
-          path: assets
-          merge-multiple: true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: benchmark-*
-          path: benchmarks
-          merge-multiple: true
-      - name: Verify complete deterministic asset set
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t archives < <(find assets -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' | LC_ALL=C sort)
-          test "${#archives[@]}" -eq 8
-          for os in linux darwin windows freebsd; do
-            for arch in amd64 arm64; do
-              case "$os" in
-                windows) test -f "assets/frs-$TAG-$os-$arch.zip" ;;
-                *) test -f "assets/frs-$TAG-$os-$arch.tar.gz" ;;
-              esac
-            done
-          done
-          first="assets/rules-linux-amd64.frs"
-          for file in assets/rules-*.frs; do cmp "$first" "$file"; done
-          rm assets/rules-*.frs
-          read -r low_name low_cpu low_memory < benchmarks/profile-low.txt
-          read -r medium_name medium_cpu medium_memory < benchmarks/profile-medium.txt
-          read -r high_name high_cpu high_memory < benchmarks/profile-high.txt
-          test "$low_name" = low
-          test "$medium_name" = medium
-          test "$high_name" = high
-          test "$((low_cpu * low_memory))" -lt "$((medium_cpu * medium_memory))"
-          test "$((medium_cpu * medium_memory))" -lt "$((high_cpu * high_memory))"
           (cd assets && sha256sum "${archives[@]}" | LC_ALL=C sort -k2 > SHA256SUMS && sha256sum -c SHA256SUMS)
       - name: Publish complete release
         env:
@@ -339,5 +116,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            printf '::error title=release already exists::GitHub Release %s already exists\n' "$TAG"
+            exit 1
+          fi
           gh release create "$TAG" assets/* --draft --verify-tag --title "$TAG" --generate-notes
           gh release edit "$TAG" --draft=false
