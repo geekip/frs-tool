@@ -69,7 +69,19 @@ jobs:
           test "$(go env GOOS)" = "$TARGET_OS"
           test "$(go env GOARCH)" = "$TARGET_ARCH"
           export CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off
-          go test -count=1 ./...
+          if ! go test -count=1 ./...; then
+            while IFS= read -r package; do
+              if ! package_output="$(go test -count=1 "$package" 2>&1)"; then
+                printf '::error title=go test failed::package %s failed\n' "$package"
+                printf '%s\n' "$package_output" | tail -n 25 | while IFS= read -r line; do
+                  line="${line//'%'/'%25'}"
+                  line="${line//$'\r'/'%0D'}"
+                  printf '::error title=go test failed::%s\n' "$line"
+                done
+              fi
+            done < <(go list ./...)
+            exit 1
+          fi
           mkdir -p dist smoke unpacked
           go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X frs-tool/internal/version.Version=$TAG" -o dist/frs ./cmd/frs-tool
           test "$(./dist/frs version | sed -n '1p')" = "frs $TAG"
@@ -134,7 +146,21 @@ jobs:
           $env:GOTOOLCHAIN = "local"
           $env:GOPROXY = "off"
           go test -count=1 ./...
-          Assert-NativeSuccess "go test"
+          if ($LASTEXITCODE -ne 0) {
+            $packages = & go list ./...
+            Assert-NativeSuccess "go list"
+            foreach ($package in $packages) {
+              $packageOutput = & go test -count=1 $package 2>&1
+              if ($LASTEXITCODE -ne 0) {
+                Write-Output "::error title=go test failed::package $package failed"
+                $packageOutput | Select-Object -Last 25 | ForEach-Object {
+                  $line = $_.ToString().Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+                  Write-Output "::error title=go test failed::$line"
+                }
+              }
+            }
+            Fail-Workflow "go test failed"
+          }
           New-Item -ItemType Directory -Force dist, smoke, unpacked | Out-Null
           go build -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X frs-tool/internal/version.Version=$env:TAG" -o dist/frs.exe ./cmd/frs-tool
           Assert-NativeSuccess "go build"
@@ -204,7 +230,14 @@ jobs:
             export CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off
             test "$(go env GOOS)" = freebsd
             test "$(go env GOARCH)" = "$TARGET_ARCH"
-            go test -count=1 ./...
+            if ! go test -count=1 ./...; then
+              for package in $(go list ./...); do
+                if ! go test -count=1 "$package"; then
+                  printf '::error title=go test failed::package %s failed\n' "$package"
+                fi
+              done
+              exit 1
+            fi
             go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X frs-tool/internal/version.Version=$TAG" -o dist/frs ./cmd/frs-tool
             test "$(./dist/frs version | sed -n '1p')" = "frs $TAG"
             printf '1.2.3.4\nDOMAIN,example.com\n' > smoke/rules.txt
